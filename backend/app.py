@@ -58,10 +58,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 @app.get("/")
 async def root():
-    return {"name": "VoiceRad API", "version": "1.0.0", "docs": "/docs", "health": "/health"}
+    return {"name": "VoiceRad API", "version": "1.0.0", "docs": "/docs", "health": "/api/health"}
 
 
-@app.get("/health")
+@app.get("/api/health")
 async def health():
     return {"status": "healthy", "device": app_state.device, "models": {"medgemma": app_state.medgemma_model is not None, "medasr": app_state.medasr_model is not None}, "active_sessions": len(app_state.sessions)}
 
