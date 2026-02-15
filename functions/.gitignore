@@ -1,0 +1,10 @@
+# Backend code is copied here at deploy time by the CI workflow
+# Do not commit it — the source of truth is /backend/
+backend/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
