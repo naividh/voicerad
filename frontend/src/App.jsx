@@ -363,7 +363,7 @@ export default function App() {
                                                   {loading ? "Analysing..." : "Analyse Image"}
                                                 </button>
                                   </div>
-                      </>>
+                      </>
                     ) : (
                       <InterpretationView
                                     interpretation={interpretation}
