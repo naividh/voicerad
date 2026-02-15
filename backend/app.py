@@ -249,7 +249,7 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
 
 
 @app.post("/api/interpret/start-session")
-    async def start_session(
+async def start_session(
     request: Request,
     image: UploadFile = File(...),
     question: Optional[str] = Form(None),
@@ -283,7 +283,7 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
 
 
 @app.post("/api/interpret/continue/{session_id}")
-    async def continue_session(
+async def continue_session(
     session_id: str,
     answer: Optional[str] = Form(None),
     audio: Optional[UploadFile] = File(None),
@@ -318,7 +318,7 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
 
 
 @app.post("/api/interpret/finalize/{session_id}")
-    async def finalize(session_id: str):
+async def finalize(session_id: str):
     session = app_state.pop_session(session_id)
     return {
         "session_id": session_id,
@@ -388,8 +388,8 @@ async def sync_queue():
 
 
 @app.get("/api/sync/status")
-    async def sync_status():
-return {"pending": 0}
+async def sync_status():
+    return {"pending": 0}
 
 
 # -- Demo helpers -------------------------------------------
@@ -435,29 +435,29 @@ def _build_final_report(session_id: str, session: dict) -> str:
 
 # -- Error handlers -----------------------------------------
 @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(request, exc):
-return JSONResponse(
+async def validation_error_handler(request, exc):
+    return JSONResponse(
         status_code=422,
         content={"error": "Validation error", "detail": str(exc)},
     )
 
 
 @app.exception_handler(Exception)
-    async def general_error_handler(request, exc):
+async def general_error_handler(request, exc):
     logger.error("Unhandled error: %s", exc, exc_info=True)
-        return JSONResponse(
+    return JSONResponse(
         status_code=500,
-    content={"error": "Internal server error"},
-)
+        content={"error": "Internal server error"},
+    )
 
 
 # -- Entrypoint ---------------------------------------------
-    if __name__ == "__main__":
+if __name__ == "__main__":
     import uvicorn
 
-        uvicorn.run(
+    uvicorn.run(
         app,
         host="0.0.0.0",
-    port=int(os.getenv("PORT", 8000)),
-reload=os.getenv("ENV", "development") == "development",
-)
+        port=int(os.getenv("PORT", 8000)),
+        reload=os.getenv("ENV", "development") == "development",
+    )
