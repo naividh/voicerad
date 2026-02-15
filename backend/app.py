@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 import logging
 import os
+import sys
 import uuid
 import time
 import hashlib
@@ -29,6 +30,7 @@ MAX_IMAGE_SIZE = 50_000_000  # 50 MB
 MAX_SESSIONS = 100
 SESSION_TTL_SECONDS = 1800  # 30 minutes
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DEMO_MODE = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes")
 
 
@@ -93,6 +95,8 @@ class AppState:
 
     # -- Rate limiting --------------------------------------
     def check_rate_limit(self, client_ip: str):
+        if DEMO_MODE:
+            return
         now = time.time()
         window = [t for t in self._rate_limits[client_ip] if now - t < 60]
         self._rate_limits[client_ip] = window
