@@ -233,163 +233,163 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
     from models.dicom_utils import is_dicom, extract_dicom_metadata
 
     metadata = {}
-        if is_dicom(image_bytes):
-            try:
-        metadata = extract_dicom_metadata(image_bytes)
-            except Exception as exc:
-        logger.warning("DICOM metadata extraction failed: %s", exc)
+    if is_dicom(image_bytes):
+        try:
+            metadata = extract_dicom_metadata(image_bytes)
+        except Exception as exc:
+            logger.warning("DICOM metadata extraction failed: %s", exc)
 
-
-    "image_id": "img_" + hashlib.sha256(image_bytes).hexdigest()[:12],
+    return {
+        "image_id": "img_" + hashlib.sha256(image_bytes).hexdigest()[:12],
         "filename": image.filename,
         "size_bytes": len(image_bytes),
         "is_dicom": is_dicom(image_bytes),
         "dicom_metadata": metadata if metadata else None,
-        }
+    }
 
 
-
-async def start_session(
-request: Request,
+@app.post("/api/interpret/start-session")
+    async def start_session(
+    request: Request,
     image: UploadFile = File(...),
     question: Optional[str] = Form(None),
-    ):
-app_state.check_rate_limit(request.client.host)
+):
+    app_state.check_rate_limit(request.client.host)
     image_bytes = await image.read()
     if not image_bytes:
-    raise HTTPException(422, "Empty image file")
+        raise HTTPException(422, "Empty image file")
 
+    session_id = app_state.create_session(image_bytes, question)
 
-
-
-    pil_image = _bytes_to_pil(image_bytes)
+    if app_state.medgemma_model:
+        pil_image = _bytes_to_pil(image_bytes)
         interpretation = app_state.medgemma_model.interpret(
-        pil_image, question or "Describe findings in this medical image."
-            )
-        else:
-    interpretation = _demo_interpretation(question)
+            pil_image, question or "Describe findings in this medical image."
+        )
+    else:
+        interpretation = _demo_interpretation(question)
 
-
-    "session_id": session_id,
+    return {
+        "session_id": session_id,
         "status": "session_started",
         "interpretation": interpretation,
         "clarifying_questions": [
-        "Any specific symptoms?",
+            "Any specific symptoms?",
             "Previous imaging available?",
             "Suspected diagnosis?",
-            ],
+        ],
         "requires_review": True,
-        }
+    }
 
 
-
-async def continue_session(
-session_id: str,
+@app.post("/api/interpret/continue/{session_id}")
+    async def continue_session(
+    session_id: str,
     answer: Optional[str] = Form(None),
     audio: Optional[UploadFile] = File(None),
-    ):
-session = app_state.get_session(session_id)
+):
+    session = app_state.get_session(session_id)
 
-
-    audio_bytes = await audio.read()
+    if audio and not answer:
+        audio_bytes = await audio.read()
         answer = (
-        app_state.medasr_model.transcribe(audio_bytes)
+            app_state.medasr_model.transcribe(audio_bytes)
             if app_state.medasr_model
             else "(voice input -- demo mode)"
-            )
+        )
 
+    if not answer:
+        raise HTTPException(422, "Provide either text answer or audio")
 
-    raise HTTPException(422, "Provide either text answer or audio")
+    session["turns"].append({"input": answer, "ts": time.time()})
 
+    if app_state.medgemma_model:
+        refined = app_state.medgemma_model.refine(
+            session["image"], answer, session["turns"]
+        )
+    else:
+        refined = _demo_refine(answer, len(session["turns"]))
 
-
-
-    refined = app_state.medgemma_model.refine(
-        session["image"], answer, session["turns"]
-            )
-        else:
-    refined = _demo_refine(answer, len(session["turns"]))
-
-
-    "session_id": session_id,
+    return {
+        "session_id": session_id,
         "refined_interpretation": refined,
         "turn": len(session["turns"]),
-        }
+    }
 
 
-
-async def finalize(session_id: str):
-session = app_state.pop_session(session_id)
+@app.post("/api/interpret/finalize/{session_id}")
+    async def finalize(session_id: str):
+    session = app_state.pop_session(session_id)
     return {
-    "session_id": session_id,
+        "session_id": session_id,
         "status": "completed",
         "final_report": _build_final_report(session_id, session),
         "total_turns": len(session["turns"]),
         "requires_clinician_review": True,
-        }
+    }
 
 
-
+# -- TTS endpoint -------------------------------------------
 @app.post("/api/tts/speak")
 async def tts_speak(text: str = Form(...)):
-"""Server-side text-to-speech placeholder.
+    """Server-side text-to-speech placeholder.
 
-
+    In production, this would use Google Cloud TTS or a local
     TTS engine and return audio bytes.  For now it returns a
     status indicating the client should use Web Speech API.
     """
     if not text or not text.strip():
-    raise HTTPException(422, "Empty text")
-        return {
-    "status": "use_client_tts",
+        raise HTTPException(422, "Empty text")
+    return {
+        "status": "use_client_tts",
         "text": text.strip(),
         "message": "Use Web Speech API for playback. Server TTS coming soon.",
-        }
+    }
 
 
-
+# -- DICOM conversion endpoint ------------------------------
 @app.post("/api/images/convert-dicom")
 async def convert_dicom(image: UploadFile = File(...)):
-"""Convert a DICOM file to PNG and return metadata."""
+    """Convert a DICOM file to PNG and return metadata."""
     image_bytes = await image.read()
     if not image_bytes:
-    raise HTTPException(422, "Empty file")
+        raise HTTPException(422, "Empty file")
 
-
+    from models.dicom_utils import is_dicom, dicom_to_pil, extract_dicom_metadata
     import io
     import base64
 
+    if not is_dicom(image_bytes):
+        raise HTTPException(
+            400, "File is not a valid DICOM image. Upload a .dcm file."
+        )
 
-    raise HTTPException(
-        400, "File is not a valid DICOM image. Upload a .dcm file."
-            )
-
-
-    pil_image = dicom_to_pil(image_bytes)
+    try:
+        pil_image = dicom_to_pil(image_bytes)
         metadata = extract_dicom_metadata(image_bytes)
-        except Exception as exc:
-    raise HTTPException(500, f"DICOM processing failed: {exc}")
+    except Exception as exc:
+        raise HTTPException(500, f"DICOM processing failed: {exc}")
 
-
+    buf = io.BytesIO()
     pil_image.save(buf, format="PNG")
     png_b64 = base64.b64encode(buf.getvalue()).decode()
 
-
-    "png_base64": png_b64,
+    return {
+        "png_base64": png_b64,
         "metadata": metadata,
         "width": pil_image.width,
         "height": pil_image.height,
-        }
+    }
 
 
-
+@app.post("/api/sync/queue")
 async def sync_queue():
-return {"status": "queued"}
+    return {"status": "queued"}
 
 
 @app.get("/api/sync/status")
-async def sync_status():
-    return {"pending": 0}
+    async def sync_status():
+return {"pending": 0}
 
 
 # -- Demo helpers -------------------------------------------
@@ -435,8 +435,8 @@ def _build_final_report(session_id: str, session: dict) -> str:
 
 # -- Error handlers -----------------------------------------
 @app.exception_handler(RequestValidationError)
-async def validation_error_handler(request, exc):
-    return JSONResponse(
+    async def validation_error_handler(request, exc):
+return JSONResponse(
         status_code=422,
         content={"error": "Validation error", "detail": str(exc)},
     )
@@ -448,7 +448,7 @@ async def validation_error_handler(request, exc):
         return JSONResponse(
         status_code=500,
     content={"error": "Internal server error"},
-
+)
 
 
 # -- Entrypoint ---------------------------------------------
