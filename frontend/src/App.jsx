@@ -101,12 +101,12 @@ function ImageUpload({ preview, onImageSelected }) {
                         onClick={() => document.getElementById("img").click()}
                       >
                       <input type="file" id="img" accept="image/*,.dcm,.dicom" onChange={handleChange} hidden />
-                      <span className="icon">📸</span>span>
-                      <span>Upload medical image</span>span>
-                      <span className="hint">PNG, JPG, or DICOM (.dcm)</span>span>
-              </div>div>
+                      <span className="icon">📸</span>
+                      <span>Upload medical image</span>
+                      <span className="hint">PNG, JPG, or DICOM (.dcm)</span>
+              </div>
           {preview && <img src={preview} alt="Medical image preview" className="prev" />}
-        </div>div>
+        </div>
       );
 }
 
@@ -114,10 +114,10 @@ function ImageUpload({ preview, onImageSelected }) {
 function ConversationTurn({ turn, index }) {
     return (
           <div className="turn">
-                <div className="turn-header">Turn {index + 1}</div>div>
-                <div className="turn-input"><b>You:</b>b> {turn.input}</div>div>
-            {turn.response && <pre className="turn-response">{turn.response}</pre>pre>}
-          </div>div>
+                <div className="turn-header">Turn {index + 1}</div>
+                <div className="turn-input"><b>You:</b> {turn.input}</div>
+            {turn.response && <pre className="turn-response">{turn.response}</pre>}
+          </div>
         );
 }
 
@@ -139,29 +139,29 @@ function InterpretationView({
 }) {
     return (
           <div className="results">
-                <h2>{sessionActive ? "Interpretation" : "Final Report"}</h2>h2>
-                <pre className="report">{interpretation}</pre>pre>
+                <h2>{sessionActive ? "Interpretation" : "Final Report"}</h2>
+                <pre className="report">{interpretation}</pre>
           
             {turns.length > 0 && (
                     <div className="turns-list">
-                              <h3>Conversation History</h3>h3>
+                              <h3>Conversation History</h3>
                       {turns.map((t, i) => <ConversationTurn key={i} turn={t} index={i} />)}
-                    </div>div>
+                    </div>
                 )}
           
                 <div className="actions">
-                        <button onClick={onListen} className="btn spk">🔊 Listen</button>button>
+                        <button onClick={onListen} className="btn spk">🔊 Listen</button>
                   {sessionActive && (
                       <button onClick={onFinalize} disabled={loading} className="btn fin">
                         {loading ? "Generating..." : "📋 Final Report"}
-                      </button>button>
+                      </button>
                         )}
-                        <button onClick={onReset} className="btn rst">🔄 New</button>button>
-                </div>div>
+                        <button onClick={onReset} className="btn rst">🔄 New</button>
+                </div>
           
             {sessionActive && (
                     <div className="continue-section">
-                              <h3>Refine Interpretation</h3>h3>
+                              <h3>Refine Interpretation</h3>
                               <div className="continue-row">
                                           <input
                                                           type="text"
@@ -172,9 +172,9 @@ function InterpretationView({
                                                           onKeyDown={(e) => e.key === "Enter" && onContinue()}
                                                         />
                                 {!recording ? (
-                                    <button onClick={startRecording} className="btn mic-sm" title="Record voice">🎤</button>button>
+                                    <button onClick={startRecording} className="btn mic-sm" title="Record voice">🎤</button>
                                   ) : (
-                                    <button onClick={stopRecording} className="btn stp-sm" title="Stop recording">⏹</button>button>
+                                    <button onClick={stopRecording} className="btn stp-sm" title="Stop recording">⏹</button>
                                           )}
                                           <button
                                                           onClick={onContinue}
@@ -182,11 +182,11 @@ function InterpretationView({
                                                           className="btn send-sm"
                                                         >
                                             {loading ? "..." : "➤"}
-                                          </button>button>
-                              </div>div>
-                    </div>div>
+                                          </button>
+                              </div>
+                    </div>
                 )}
-          </div>div>
+          </div>
         );
 }
 
@@ -334,14 +334,14 @@ export default function App() {
     return (
           <div className="vr">
                 <header className="hd">
-                        <h1>VoiceRad</h1>h1>
-                        <p>Voice-Controlled Radiology Assistant</p>p>
+                        <h1>VoiceRad</h1>
+                        <p>Voice-Controlled Radiology Assistant</p>
                         <span className={"badge " + (isOnline ? "on" : "off")}>
                           {isOnline ? "Online" : "Offline"}
-                        </span>span>
-                </header>header>
+                        </span>
+                </header>
           
-            {error && <div className="error-banner">{error}</div>div>}
+            {error && <div className="error-banner">{error}</div>}
           
                 <main className="mn">
                   {!showResults ? (
@@ -350,19 +350,19 @@ export default function App() {
                       
                                   <div className="voice">
                                     {!recording ? (
-                                        <button onClick={startRecording} className="btn rec">🎤 Record Question</button>button>
+                                        <button onClick={startRecording} className="btn rec">🎤 Record Question</button>
                                       ) : (
-                                        <button onClick={stopRecording} className="btn stp">⏹ Stop Recording</button>button>
+                                        <button onClick={stopRecording} className="btn stp">⏹ Stop Recording</button>
                                                 )}
-                                    {transcript && <p className="trans"><b>Q:</b>b> {transcript}</p>p>}
+                                    {transcript && <p className="trans"><b>Q:</b> {transcript}</p>}
                                                 <button
                                                                   onClick={handleSubmit}
                                                                   disabled={!imageFile || !transcript || loading}
                                                                   className="btn sub"
                                                                 >
                                                   {loading ? "Analysing..." : "Analyse Image"}
-                                                </button>button>
-                                  </div>div>
+                                                </button>
+                                  </div>
                       </>>
                     ) : (
                       <InterpretationView
@@ -385,15 +385,15 @@ export default function App() {
                   {loading && (
                       <div className="ld">
                                   <div className="spinner" />
-                                  <p>Processing...</p>p>
-                      </div>div>
+                                  <p>Processing...</p>
+                      </div>
                         )}
-                </main>main>
+                </main>
           
                 <footer className="ft">
-                        <p>⚠️ VoiceRad is a demo. Always verify with medical professionals.</p>p>
-                        <p>Powered by Google MedGemma & MedASR | Kaggle MedGemma Impact Challenge 2026</p>p>
-                </footer>footer>
-          </div>div>
+                        <p>⚠️ VoiceRad is a demo. Always verify with medical professionals.</p>
+                        <p>Powered by Google MedGemma & MedASR | Kaggle MedGemma Impact Challenge 2026</p>
+                </footer>
+          </div>
         );
 }</></div>
