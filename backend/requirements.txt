@@ -1,14 +1,35 @@
+# VoiceRad Backend Dependencies
+# Updated v1.2.0 - added missing deps for 4-bit quantization & TTS
+
+# -- Core web framework --
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 pydantic==2.5.0
+
+# -- Image processing --
 pillow==10.1.0
 numpy==1.24.3
+
+# -- ML / AI --
 torch>=2.1.0
-transformers>=4.35.2
+transformers>=4.45.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+
+# -- Medical imaging --
 pydicom==2.4.0
+
+# -- Speech recognition --
+openai-whisper==20231117
 librosa==0.10.0
 soundfile==0.12.1
+
+# -- Text-to-speech --
+edge-tts>=6.1.0
+
+# -- Utilities --
 python-dotenv==1.0.0
 aiofiles==23.2.1
 httpx<0.28
+scipy>=1.11.0
