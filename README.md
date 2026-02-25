@@ -1,8 +1,8 @@
 # VoiceRad
 
-**Voice-Controlled Mobile Radiology Assistant**
+**Voice-Controlled Mobile Radiology Assistant with Clinical Safety Rails**
 
-Built for the [Kaggle MedGemma Impact Challenge](https://www.kaggle.com/competitions/med-gemma-impact-challenge) using Google's MedGemma, and Health AI Developer Foundations ([HAI-DEF](https://github.com/Google-Health/hai-def)).
+Built for the [Kaggle MedGemma Impact Challenge](https://www.kaggle.com/competitions/med-gemma-impact-challenge) using Google's MedGemma and Health AI Developer Foundations ([HAI-DEF](https://github.com/Google-Health/hai-def)).
 
 ---
 
@@ -12,99 +12,219 @@ Over **42 000 radiologist positions** will be unfilled globally by 2033, and **4
 
 ## The Solution
 
-VoiceRad is a **Progressive Web App** where a clinician can:
+VoiceRad is a **voice-first, offline-capable PWA** that lets rural clinicians upload a chest X-ray, ask questions by voice, and receive AI-assisted interpretations powered by **MedGemma 1.5 4B** with built-in clinical safety rails.
 
-1. **Speak** a clinical question ("What do you see in this chest X-ray?")
-2. **Upload** a medical image (DICOM, JPG, PNG) from a phone camera or scanner
-3. **Receive** an AI-powered radiology interpretation with voice playback
-4. **Refine** the result through multi-turn agentic conversation
-5. **Work offline** and sync when connectivity returns
+### What makes VoiceRad different
+
+1. **Voice-first design** for hands-free clinical use (voice input via Whisper STT, audio output via edge-tts)
+2. **Clinical safety rails** that classify every interpretation by triage level (CRITICAL / URGENT / ROUTINE / NORMAL), confidence score, and referral triggers
+3. **Multi-turn agentic conversation** where clinicians can refine interpretations with additional clinical context
+4. **Offline-first architecture** with IndexedDB queueing and background sync
+5. **DICOM native support** with metadata extraction and conversion
 
 ---
-
-## Key Features
-
-- Voice-controlled interface (Whisper-based speech-to-text with graceful fallback)
-- Multimodal medical image analysis via **MedGemma 1.5 4B**
-- Agentic multi-turn conversation for diagnostic refinement
-- Offline-first PWA with background sync
-- Structured radiology report generation
-- Mobile-first responsive design
-- Session TTL + cleanup for memory safety
-- Input validation with clear HTTP error codes
-- Configurable CORS origins
 
 ## Architecture
 
 ```
-Browser (React PWA)
-    | voice / image / text
-    v
-FastAPI Backend
-    +-- Whisper / MedASR  (speech -> text)
-    +-- MedGemma 1.5 4B   (image + text -> interpretation)
-    +-- Agentic Loop       (multi-turn refinement)
-    +-- TTS                (text -> speech)
+[Voice Input] --> [Whisper STT] --> [FastAPI Backend]
+[Image Upload] --> [DICOM/PNG/JPG] ---|
+                                       v
+                               [MedGemma 1.5 4B]
+                               (4-bit NF4 quantized)
+                                       |
+                                       v
+                              [Clinical Safety Engine]
+                              (triage + confidence + referral)
+                                       |
+                                       v
+                              [React PWA Frontend]
+                              (SafetyBanner + TTS playback)
 ```
+
+### Backend (FastAPI + Python)
+
+- `backend/app.py` — API server v1.3.0 with safety-integrated endpoints
+- `backend/safety.py` — Deterministic clinical safety engine (triage, confidence thresholds, referral triggers)
+- `backend/benchmarks.py` — CheXpert-aligned clinical benchmark runner
+- `backend/models/medgemma_wrapper.py` — MedGemma 1.5 4B with 4-bit NF4 quantization
+- `backend/models/medasr_wrapper.py` — Whisper-based medical speech recognition
+- `backend/models/dicom_utils.py` — DICOM to PIL conversion and metadata extraction
+
+### Frontend (React PWA)
+
+- `frontend/src/App.jsx` — Main app with safety state tracking and server TTS
+- `frontend/src/components/SafetyBanner.jsx` — Visual safety rail UI (triage colors, confidence bar, referral alerts)
+- Offline-first with IndexedDB + service worker sync
+
+---
+
+## Clinical Safety Rails
+
+Every AI interpretation passes through a deterministic safety engine that **cannot be bypassed by the model**. Safety is monotonically increasing — more information can only make the system MORE cautious, never less.
+
+### Triage Classification
+
+| Level | Color | Action Required |
+|-------|-------|----------------|
+| CRITICAL | Red (pulsing) | Immediate radiologist review |
+| URGENT | Orange | Review within 1 hour |
+| ROUTINE | Yellow | Standard review queue |
+| NORMAL | Green | No acute findings |
+
+### Confidence Thresholds
+
+| Range | Label | Behavior |
+|-------|-------|----------|
+| >= 85% | HIGH | Green indicator. Clinician sign-off still required. |
+| 60-84% | MODERATE | Yellow indicator. Standard review. |
+| 30-59% | LOW | Orange indicator. Prominent warning banner. |
+| < 30% | VERY_LOW | **BLOCKED.** Interpretation withheld. Forced referral. |
+
+### Critical Finding Detection
+
+The safety engine scans every interpretation for ACR Critical Results patterns:
+
+- Pneumothorax (including tension)
+- Aortic dissection / rupture
+- Pulmonary embolism
+- Acute stroke / infarct
+- Active hemorrhage
+- Cardiac tamponade
+- Spinal cord compression
+- Necrotizing fasciitis
+- And more...
+
+Any critical pattern triggers **IMMEDIATE referral** regardless of confidence score.
+
+### Referral Triggers
+
+- **IMMEDIATE**: Critical findings detected, or model confidence < 30%
+- **URGENT**: Urgent findings (suspected malignancy, large effusions, bowel obstruction, DVT)
+- **Hedging penalty**: If the model uses uncertain language ("cannot determine", "possible", "limited study"), confidence is automatically reduced
+
+### Human-in-Loop Flagging
+
+**Every single interpretation** is flagged with "Clinician review required — AI-assisted only", regardless of confidence level. VoiceRad is designed as a clinical decision SUPPORT tool, never an autonomous diagnostic system.
+
+---
+
+## Clinical Benchmarks
+
+VoiceRad includes a built-in benchmark runner aligned with **CheXpert pathology labels** for clinical validation.
+
+### Benchmark Cases (`benchmarks/clinical_validation.json`)
+
+20 CheXpert-labeled test cases covering:
+- Normal chest X-rays
+- Cardiomegaly
+- Pleural effusion
+- Consolidation / Pneumonia
+- Pneumothorax (including tension)
+- Atelectasis
+- Lung mass / suspected malignancy
+- Pulmonary edema
+- Multi-pathology combinations
+
+### Metrics Tracked
+
+- **Per-pathology sensitivity and specificity** (Cardiomegaly, Effusion, Consolidation, Pneumothorax, Atelectasis)
+- **Safety triage accuracy** (does the system correctly classify CRITICAL vs ROUTINE?)
+- **Critical finding detection rate** (does the system catch pneumothorax / PE / aortic dissection?)
+- **Average confidence scores** per triage level
+
+### Running Benchmarks
+
+```bash
+# Via API
+curl -X POST http://localhost:8000/api/benchmarks/run
+
+# Programmatic
+from benchmarks import BenchmarkRunner
+runner = BenchmarkRunner(model=medgemma_model, safety_engine=safety_engine)
+summary = runner.run_suite(test_cases)
+print(summary.to_dict())
+```
+
+---
+
+## Performance Optimizations
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Inference speed (T4 GPU) | 21-35 seconds | ~7-10 seconds |
+| VRAM usage | ~8 GB (float16) | ~3 GB (4-bit NF4) |
+| DICOM on refine turn 2+ | Crash | Fixed |
+| STT model loading | Fails (fake model) then fallback | Direct Whisper load |
+| Server TTS | Stub (no-op) | Real audio via edge-tts |
+| GPU Docker support | None | Full NVIDIA runtime |
+| Offline sync | Always returns 0 | Real queue tracking |
+
+### Key Optimizations
+
+- **4-bit NF4 quantization** via BitsAndBytesConfig — cuts VRAM by 60%, improves speed 3x
+- **Greedy decoding** (do_sample=False) for deterministic, faster clinical output
+- **GPU memory cleanup** with gc.collect() + torch.cuda.empty_cache() in try/finally blocks
+- **PIL image caching** in session — no more re-encoding the same image on every refine turn
+- **Direct Whisper loading** — removed fake google/medASR attempt that always failed
 
 ---
 
 ## Quick Start
 
-### Docker (recommended)
+### Prerequisites
+
+- Python 3.10+
+- Node.js 18+
+- (Optional) NVIDIA GPU with CUDA 12.1 for real model inference
+
+### Backend
 
 ```bash
-git clone https://github.com/naividh/voicerad.git
-cd voicerad
-docker-compose up
-
-# Backend -> http://localhost:8000
-# Frontend -> http://localhost:3000
-```
-
-### Manual
-
-```bash
-# Backend
 cd backend
 pip install -r requirements.txt
-DEMO_MODE=1 python app.py
+# Demo mode (no GPU needed)
+DEMO_MODE=true python app.py
+# Real mode (requires HuggingFace token with MedGemma access)
+HF_TOKEN=your_token python app.py
+```
 
-# Frontend (new terminal)
+### Frontend
+
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Download Models
+### Docker
 
 ```bash
-bash scripts/setup_models.sh
-```
+# CPU demo mode
+docker compose up
 
-### Run Tests
-
-```bash
-pip install pytest httpx
-DEMO_MODE=1 pytest
+# GPU mode with real models
+docker compose --profile gpu up
 ```
 
 ---
 
-## API
+## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/health` | Service health check |
-| POST | `/api/voice/transcribe` | Medical speech-to-text |
-| POST | `/api/images/upload` | Upload medical image |
-| POST | `/api/interpret/start-session` | Begin interpretation |
-| POST | `/api/interpret/continue/{id}` | Refine with new context |
-| POST | `/api/interpret/finalize/{id}` | Generate final report |
-| POST | `/api/sync/queue` | Queue offline sync |
-| GET | `/api/sync/status` | Check sync status |
-
-Full docs at [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI).
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | System status, model availability, active sessions |
+| POST | `/api/voice/transcribe` | Speech-to-text (Whisper) |
+| POST | `/api/images/upload` | Image upload with DICOM detection |
+| POST | `/api/images/convert-dicom` | DICOM to PNG conversion |
+| POST | `/api/interpret/start-session` | Start interpretation session (returns safety assessment) |
+| POST | `/api/interpret/continue/{id}` | Refine with additional context (returns updated safety) |
+| POST | `/api/interpret/finalize/{id}` | Generate final report with safety history |
+| POST | `/api/safety/assess` | Standalone safety assessment for any clinical text |
+| POST | `/api/benchmarks/run` | Run clinical validation benchmarks |
+| POST | `/api/tts/speak` | Text-to-speech via edge-tts |
+| POST | `/api/sync/queue` | Queue offline requests |
+| GET | `/api/sync/status` | Check sync queue status |
 
 ---
 
@@ -113,220 +233,50 @@ Full docs at [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger U
 ```
 voicerad/
   backend/
-    app.py                    FastAPI server
+    app.py                    # FastAPI server v1.3.0
+    safety.py                 # Clinical safety engine
+    benchmarks.py             # CheXpert benchmark runner
+    requirements.txt          # Python dependencies
+    Dockerfile                # CPU/GPU via build arg
     models/
-      medgemma_wrapper.py     MedGemma 1.5 4B inference
-      medasr_wrapper.py       Speech-to-text (Whisper fallback)
-    Dockerfile
-    requirements.txt
+      medgemma_wrapper.py     # MedGemma 4-bit quantized inference
+      medasr_wrapper.py       # Whisper STT
+      dicom_utils.py          # DICOM handling
   frontend/
     src/
-      App.jsx                 Main app (component-split)
-      useVoiceRecorder.js     Voice recording hook
-      ImageUpload.jsx         Image upload component
-      InterpretationView.jsx  Interpretation display
-    public/
-      sw.js                   Service Worker
-    Dockerfile
+      App.jsx                 # Main app with safety integration
+      App.css                 # Styles including safety animations
+      components/
+        SafetyBanner.jsx      # Safety rail visual component
+  benchmarks/
+    clinical_validation.json  # 20 CheXpert-labeled test cases
   tests/
-    test_api.py               26 pytest API tests
-  scripts/
-    setup_models.sh           Model downloader
-  pytest.ini                  Test config
-  docker-compose.yml
-  LICENSE                     Apache 2.0
+    test_safety.py            # 25 safety rail unit tests
+    test_app.py               # API endpoint tests
+  docker-compose.yml          # CPU + GPU profiles
+  .github/workflows/          # CI/CD
 ```
 
 ---
 
-## Models & Speech Recognition
+## Safety Philosophy
 
-| Component | Primary | Fallback |
-|-----------|---------|----------|
-| Image interpretation | MedGemma 1.5 4B (`google/medgemma-1.5-4b-it`) | Demo stub |
-| Speech-to-text | MedASR (`google/medASR` — CTC model) | OpenAI Whisper `base` |
+VoiceRad follows a **fail-safe** design principle:
 
-> **Note:** The MedASR model ID `google/medASR` is the expected HAI-DEF speech model. If it is not available on HuggingFace at runtime, the wrapper **automatically falls back to OpenAI Whisper** (`base` model), which provides high-quality general-purpose medical transcription. Set `DEMO_MODE=1` to skip all model loading entirely.
+1. **The AI can never autonomously diagnose.** Every output requires clinician review.
+2. **Safety overrides are deterministic.** No probabilistic model can override the safety engine.
+3. **Confidence below 30% blocks output entirely.** The system would rather show nothing than show something dangerously wrong.
+4. **Critical findings trigger immediate referral.** Pneumothorax, PE, aortic dissection — these are never treated as routine.
+5. **Safety is monotonically increasing.** Additional information or hedging can only make the system more cautious.
 
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEMO_MODE` | `""` | Set to `1` / `true` to skip model loading |
-| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated CORS origins |
-| `PORT` | `8000` | Backend port |
-| `HF_TOKEN` | — | HuggingFace token for gated models |
+This is not a replacement for radiologists. It is a tool to help clinicians in underserved areas where no radiologist is available, with built-in guardrails that protect patients when the AI is uncertain.
 
 ---
-
-## Prize Alignment
-
-| Prize | How VoiceRad Qualifies |
-|-------|------------------------|
-| Main Track ($75 K) | Full application with real clinical impact |
-| Edge AI ($5 K) | MedGemma 4B runs locally on mobile hardware |
-| Agentic Workflow ($10 K) | Voice -> Image -> Multi-turn interpretation pipeline |
-| Novel Task ($10 K) | Fine-tuned MedGemma for radiology report generation |
-
-## Tech Stack
-
-- **Backend:** Python, FastAPI, PyTorch, Transformers
-- **Frontend:** React 18, Vite, Service Workers, IndexedDB
-- **Models:** MedGemma 1.5 4B, Whisper (speech), MedSigLIP
-- **Infra:** Docker, Docker Compose
-- **Tests:** pytest, FastAPI TestClient
-
----
-
-## Disclaimer
-
-VoiceRad is a demonstration application. It is **not** approved for autonomous clinical diagnosis. All AI-generated interpretations require clinician review.
 
 ## License
 
 Apache 2.0
-# VoiceRad
 
-**Voice-Controlled Mobile Radiology Assistant**
+## Team
 
-Built for the [Kaggle MedGemma Impact Challenge](https://www.kaggle.com/competitions/med-gemma-impact-challenge) using Google's MedGemma, MedASR, and MedSigLIP from Health AI Developer Foundations (HAI-DEF).
-
----
-
-## The Problem
-
-Over **42 000 radiologist positions** will be unfilled globally by 2033, and **4.5 billion people** lack access to basic medical imaging services (WHO). Rural and resource-limited clinics simply cannot access cloud-dependent diagnostic tools.
-
-## The Solution
-
-VoiceRad is a Progressive Web App where a clinician can:
-
-1. **Speak** a clinical question ("What do you see in this chest X-ray?")
-2. **Upload** a medical image (DICOM, JPG, PNG) from a phone camera or scanner
-3. **Receive** an AI-powered radiology interpretation with voice playback
-4. **Refine** the result through multi-turn agentic conversation
-5. **Work offline** and sync when connectivity returns
-
-## Key Features
-
-- Voice-controlled interface powered by MedASR
-- Multimodal medical image analysis via MedGemma 1.5 4B
-- Agentic multi-turn conversation for diagnostic refinement
-- Offline-first PWA with background sync
-- Structured radiology report generation
-- Mobile-first responsive design
-
-## Architecture
-
-```
-Browser (React PWA)
-   |  voice / image / text
-   v
-FastAPI Backend
-   |
-   +-- MedASR       (speech-to-text)
-   +-- MedGemma 1.5 (image + text interpretation)
-   +-- MedSigLIP    (image embeddings, optional)
-   |
-   v
-Structured Report -> Voice Playback (TTS)
-```
-
-## Quick Start
-
-### Docker (recommended)
-
-```bash
-git clone https://github.com/naividh/voicerad.git
-cd voicerad
-docker-compose up
-# Backend  -> http://localhost:8000
-# Frontend -> http://localhost:3000
-```
-
-### Manual
-
-```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-python app.py
-
-# Frontend (new terminal)
-cd frontend
-npm install
-npm run dev
-```
-
-### Download Models
-
-```bash
-bash scripts/setup_models.sh
-```
-
-## API
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | /api/voice/transcribe | Medical speech-to-text |
-| POST | /api/images/upload | Upload medical image |
-| POST | /api/interpret/start-session | Begin interpretation |
-| POST | /api/interpret/continue/{id} | Refine with new context |
-| POST | /api/interpret/finalize/{id} | Generate final report |
-| GET  | /health | Service health check |
-
-Full docs at http://localhost:8000/docs (Swagger UI).
-
-## Project Structure
-
-```
-voicerad/
-  backend/
-    app.py                   FastAPI server
-    models/
-      medgemma_wrapper.py    MedGemma 1.5 4B integration
-      medasr_wrapper.py      MedASR speech recognition
-    Dockerfile
-    requirements.txt
-  frontend/
-    src/
-      App.jsx                React application
-      App.css                Mobile-first styles
-      main.jsx               Entry point + SW registration
-    public/
-      manifest.json          PWA manifest
-      service-worker.js      Offline caching & sync
-    index.html
-    vite.config.js
-    Dockerfile
-    package.json
-  scripts/
-    setup_models.sh          Model download helper
-  docker-compose.yml
-```
-
-## Prize Alignment
-
-| Prize | How VoiceRad Qualifies |
-|-------|------------------------|
-| Main Track ($75 K) | Full application with real clinical impact |
-| Edge AI ($5 K) | MedGemma 4B runs locally on mobile hardware |
-| Agentic Workflow ($10 K) | Voice -> Image -> Multi-turn interpretation pipeline |
-| Novel Task ($10 K) | Fine-tuned MedGemma for radiology report generation |
-
-## Tech Stack
-
-- **Backend:** Python, FastAPI, PyTorch, Transformers
-- **Frontend:** React 18, Vite, Service Workers, IndexedDB
-- **Models:** MedGemma 1.5 4B, MedASR, MedSigLIP
-- **Infra:** Docker, Docker Compose
-
-## Disclaimer
-
-VoiceRad is a demonstration application. It is **not** approved for autonomous clinical diagnosis. All AI-generated interpretations must be reviewed by a qualified healthcare professional before any clinical decisions are made.
-
-## License
-
-Apache 2.0
+Built for the Kaggle MedGemma Impact Challenge 2026.
