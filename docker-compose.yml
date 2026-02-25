@@ -1,3 +1,8 @@
+# VoiceRad Docker Compose
+# CPU demo mode (default):  docker compose up
+# GPU mode:                 docker compose --profile gpu up
+# CPU with real models:     DEMO_MODE=false HF_TOKEN=hf_xxx docker compose up
+
 version: "3.9"
 
 services:
@@ -9,10 +14,40 @@ services:
     environment:
       - PORT=8000
       - ENV=development
-      - DEMO_MODE=true
+      - DEMO_MODE=${DEMO_MODE:-true}
+      - HF_TOKEN=${HF_TOKEN:-}
       - ALLOWED_ORIGINS=http://localhost:3000
     volumes:
       - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # GPU-enabled backend (use with: docker compose --profile gpu up)
+  backend-gpu:
+    build:
+      context: ./backend
+      args:
+        BASE_IMAGE: nvidia/cuda:12.1.0-runtime-ubuntu22.04
+    container_name: voicerad-backend-gpu
+    profiles: ["gpu"]
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - ENV=development
+      - DEMO_MODE=false
+      - HF_TOKEN=${HF_TOKEN}
+      - ALLOWED_ORIGINS=http://localhost:3000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
