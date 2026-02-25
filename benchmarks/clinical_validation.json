@@ -1,0 +1,173 @@
+{
+  "_meta": {
+    "name": "VoiceRad Clinical Validation Suite",
+    "version": "1.0.0",
+    "description": "Benchmark test cases for CXR interpretation with ground truth labels from CheXpert taxonomy",
+    "pathology_taxonomy": "CheXpert (14 labels)",
+    "triage_levels": ["NORMAL", "ROUTINE", "URGENT", "CRITICAL"],
+    "total_cases": 20,
+    "created": "2026-02-26"
+  },
+  "cases": [
+    {
+      "case_id": "CXR-001",
+      "description": "Normal adult CXR, PA view",
+      "question": "Describe findings in this chest X-ray.",
+      "ground_truth_labels": ["No Finding"],
+      "expected_triage": "NORMAL",
+      "image_url": "chexpert/normal_001.jpg"
+    },
+    {
+      "case_id": "CXR-002",
+      "description": "Right lower lobe pneumonia",
+      "question": "Evaluate for infectious process.",
+      "ground_truth_labels": ["Consolidation", "Pneumonia"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/pneumonia_001.jpg"
+    },
+    {
+      "case_id": "CXR-003",
+      "description": "Congestive heart failure",
+      "question": "Evaluate cardiac silhouette and lung fields.",
+      "ground_truth_labels": ["Cardiomegaly", "Pleural Effusion", "Edema"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/chf_001.jpg"
+    },
+    {
+      "case_id": "CXR-004",
+      "description": "Left-sided tension pneumothorax",
+      "question": "Evaluate for pneumothorax.",
+      "ground_truth_labels": ["Pneumothorax"],
+      "expected_triage": "CRITICAL",
+      "image_url": "chexpert/tension_ptx_001.jpg"
+    },
+    {
+      "case_id": "CXR-005",
+      "description": "Bilateral pleural effusions",
+      "question": "Describe the lung bases.",
+      "ground_truth_labels": ["Pleural Effusion"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/effusion_001.jpg"
+    },
+    {
+      "case_id": "CXR-006",
+      "description": "Right upper lobe mass - suspected lung cancer",
+      "question": "Evaluate for any masses or nodules.",
+      "ground_truth_labels": ["Lung Lesion"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/mass_001.jpg"
+    },
+    {
+      "case_id": "CXR-007",
+      "description": "Left lower lobe atelectasis post-surgery",
+      "question": "Post-operative chest X-ray evaluation.",
+      "ground_truth_labels": ["Atelectasis", "Support Devices"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/atelectasis_001.jpg"
+    },
+    {
+      "case_id": "CXR-008",
+      "description": "Rib fractures from trauma",
+      "question": "Evaluate for fractures after fall.",
+      "ground_truth_labels": ["Fracture"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/fracture_001.jpg"
+    },
+    {
+      "case_id": "CXR-009",
+      "description": "Widened mediastinum - aortic dissection concern",
+      "question": "Evaluate mediastinal contour.",
+      "ground_truth_labels": ["Enlarged Cardiomediastinum"],
+      "expected_triage": "CRITICAL",
+      "image_url": "chexpert/wide_mediastinum_001.jpg"
+    },
+    {
+      "case_id": "CXR-010",
+      "description": "Normal with endotracheal tube",
+      "question": "Confirm ETT placement.",
+      "ground_truth_labels": ["Support Devices"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/ett_001.jpg"
+    },
+    {
+      "case_id": "CXR-011",
+      "description": "Multilobar pneumonia - severe",
+      "question": "Evaluate bilateral lung fields.",
+      "ground_truth_labels": ["Consolidation", "Pneumonia", "Lung Opacity"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/multilobar_pna_001.jpg"
+    },
+    {
+      "case_id": "CXR-012",
+      "description": "Isolated cardiomegaly",
+      "question": "Evaluate heart size.",
+      "ground_truth_labels": ["Cardiomegaly"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/cardiomegaly_001.jpg"
+    },
+    {
+      "case_id": "CXR-013",
+      "description": "Ground glass opacities bilateral",
+      "question": "Evaluate for diffuse lung disease.",
+      "ground_truth_labels": ["Lung Opacity", "Edema"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/ggo_001.jpg"
+    },
+    {
+      "case_id": "CXR-014",
+      "description": "Normal pediatric CXR",
+      "question": "Routine pediatric chest evaluation.",
+      "ground_truth_labels": ["No Finding"],
+      "expected_triage": "NORMAL",
+      "image_url": "chexpert/peds_normal_001.jpg"
+    },
+    {
+      "case_id": "CXR-015",
+      "description": "Right-sided simple pneumothorax",
+      "question": "Check for pneumothorax.",
+      "ground_truth_labels": ["Pneumothorax"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/simple_ptx_001.jpg"
+    },
+    {
+      "case_id": "CXR-016",
+      "description": "Pleural thickening post-TB",
+      "question": "Evaluate chronic lung changes.",
+      "ground_truth_labels": ["Pleural Other"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/pleural_thick_001.jpg"
+    },
+    {
+      "case_id": "CXR-017",
+      "description": "Pacemaker with cardiomegaly",
+      "question": "Routine pacemaker check CXR.",
+      "ground_truth_labels": ["Support Devices", "Cardiomegaly"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/pacer_001.jpg"
+    },
+    {
+      "case_id": "CXR-018",
+      "description": "Large pericardial effusion",
+      "question": "Evaluate cardiac silhouette.",
+      "ground_truth_labels": ["Enlarged Cardiomediastinum"],
+      "expected_triage": "CRITICAL",
+      "image_url": "chexpert/pericardial_eff_001.jpg"
+    },
+    {
+      "case_id": "CXR-019",
+      "description": "Left lingular consolidation",
+      "question": "Evaluate left lung field.",
+      "ground_truth_labels": ["Consolidation"],
+      "expected_triage": "ROUTINE",
+      "image_url": "chexpert/lingular_001.jpg"
+    },
+    {
+      "case_id": "CXR-020",
+      "description": "Pathologic rib fracture with mass",
+      "question": "Evaluate bony structures.",
+      "ground_truth_labels": ["Fracture", "Lung Lesion"],
+      "expected_triage": "URGENT",
+      "image_url": "chexpert/path_fx_001.jpg"
+    }
+  ]
+}
