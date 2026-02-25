@@ -1,13 +1,13 @@
 """
 VoiceRad - Voice-Controlled Mobile Radiology Assistant
-FastAPI Backend Server
+FastAPI Backend Server (v1.3.0)
 
-Fixes applied (v1.2.0):
-- Session now stores PIL image (not raw bytes) to avoid DICOM crash on refine
-- refine() receives PIL Image directly
-- Server-side TTS via edge-tts (no more stub)
-- Offline sync queue with actual persistence
-- Varied demo responses for realistic testing
+v1.3.0 additions:
+- Clinical safety rails integrated into all interpretation endpoints
+- Safety assessment (triage, confidence, referral triggers) on every response
+- /api/safety/assess endpoint for standalone safety evaluation
+- /api/benchmarks/run endpoint for clinical validation
+- Structured interpretation response with safety metadata
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 # -- Configuration -------------------------------------------
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
-MAX_IMAGE_SIZE = 50_000_000  # 50 MB
+MAX_IMAGE_SIZE = 50_000_000
 MAX_SESSIONS = 100
-SESSION_TTL_SECONDS = 1800  # 30 minutes
+SESSION_TTL_SECONDS = 1800
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -44,10 +44,10 @@ DEMO_MODE = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes")
 
 class AppState:
     """Holds runtime state for the application."""
-
     def __init__(self):
         self.medgemma_model = None
         self.medasr_model = None
+        self.safety_engine = None
         self.device = self._detect_device()
         self.sessions: dict = {}
         self._rate_limits: dict = defaultdict(list)
@@ -61,65 +61,50 @@ class AppState:
         except ImportError:
             return "cpu"
 
-    # -- Session management ---------------------------------
-    def create_session(
-        self, pil_image, image_bytes: bytes, question: Optional[str]
-    ) -> str:
-        """Create a new interpretation session with TTL enforcement.
-
-        CHANGED: Now stores PIL image alongside raw bytes.
-        PIL image is used for MedGemma inference (avoids re-decoding).
-        Raw bytes kept only for potential re-upload/export.
-        """
+    def create_session(self, pil_image, image_bytes, question):
         self._cleanup_expired_sessions()
         if len(self.sessions) >= MAX_SESSIONS:
-            raise HTTPException(429, "Too many active sessions. Try again later.")
-
+            raise HTTPException(429, "Too many active sessions.")
         session_id = str(uuid.uuid4())[:12]
         self.sessions[session_id] = {
             "created": time.time(),
-            "pil_image": pil_image,      # PIL Image for inference
-            "image_bytes": image_bytes,   # Raw bytes for export
+            "pil_image": pil_image,
+            "image_bytes": image_bytes,
             "question": question,
             "turns": [],
+            "safety_history": [],
         }
         return session_id
 
-    def get_session(self, session_id: str) -> dict:
-        """Retrieve a session or raise 404."""
+    def get_session(self, session_id):
         self._cleanup_expired_sessions()
         if session_id not in self.sessions:
             raise HTTPException(404, "Session not found")
         return self.sessions[session_id]
 
-    def pop_session(self, session_id: str) -> dict:
-        """Retrieve and remove a session or raise 404."""
+    def pop_session(self, session_id):
         self._cleanup_expired_sessions()
         if session_id not in self.sessions:
             raise HTTPException(404, "Session not found")
         return self.sessions.pop(session_id)
 
     def _cleanup_expired_sessions(self):
-        """Remove sessions older than SESSION_TTL_SECONDS."""
         now = time.time()
         expired = [
-            sid
-            for sid, data in self.sessions.items()
-            if now - data["created"] > SESSION_TTL_SECONDS
+            sid for sid, d in self.sessions.items()
+            if now - d["created"] > SESSION_TTL_SECONDS
         ]
         for sid in expired:
             self.sessions.pop(sid, None)
-            logger.info("Expired session %s", sid)
 
-    # -- Rate limiting --------------------------------------
-    def check_rate_limit(self, client_ip: str):
+    def check_rate_limit(self, client_ip):
         if DEMO_MODE:
             return
         now = time.time()
         window = [t for t in self._rate_limits[client_ip] if now - t < 60]
         self._rate_limits[client_ip] = window
         if len(window) >= RATE_LIMIT_RPM:
-            raise HTTPException(429, "Rate limit exceeded. Try again in a minute.")
+            raise HTTPException(429, "Rate limit exceeded.")
         self._rate_limits[client_ip].append(now)
 
 
@@ -130,21 +115,25 @@ app_state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("VOICERAD BACKEND STARTING")
-    logger.info("Device: %s | Demo mode: %s", app_state.device, DEMO_MODE)
+    logger.info("VOICERAD BACKEND v1.3.0 STARTING")
+    logger.info("Device: %s | Demo: %s", app_state.device, DEMO_MODE)
+
+    # Always load safety engine (it's deterministic, no GPU needed)
+    from safety import ClinicalSafetyEngine
+    app_state.safety_engine = ClinicalSafetyEngine()
+    logger.info("Clinical safety engine loaded")
 
     if not DEMO_MODE:
         try:
             from models.medgemma_wrapper import MedGemmaModel
             from models.medasr_wrapper import MedASRModel
-
             app_state.medgemma_model = MedGemmaModel(device=app_state.device)
             app_state.medasr_model = MedASRModel(device=app_state.device)
             logger.info("All models loaded successfully")
         except Exception as exc:
-            logger.warning("Models unavailable, falling back to demo: %s", exc)
+            logger.warning("Models unavailable: %s", exc)
     else:
-        logger.info("DEMO_MODE enabled -- skipping model loading")
+        logger.info("DEMO_MODE -- skipping model loading")
 
     logger.info("BACKEND READY http://localhost:8000")
     logger.info("=" * 60)
@@ -152,14 +141,12 @@ async def lifespan(app: FastAPI):
     app_state.medgemma_model = app_state.medasr_model = None
 
 
-# -- App ----------------------------------------------------
 app = FastAPI(
     title="VoiceRad API",
-    description="Voice-Controlled Radiology Assistant",
-    version="1.2.0",
+    description="Voice-Controlled Radiology Assistant with Clinical Safety Rails",
+    version="1.3.0",
     lifespan=lifespan,
 )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -169,55 +156,66 @@ app.add_middleware(
 )
 
 
-# -- Request logging middleware -----------------------------
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
     response = await call_next(request)
-    elapsed = (time.time() - start) * 1000
     logger.info(
-        "%s %s -> %s (%.1fms)",
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed,
+        "%s %s -> %s (%.0fms)",
+        request.method, request.url.path,
+        response.status_code, (time.time() - start) * 1000,
     )
     return response
 
 
-# -- Helper: image bytes -> PIL ----------------------------
-def _bytes_to_pil(image_bytes: bytes):
-    """Convert raw image bytes (PNG/JPG/DICOM) to PIL Image."""
+def _bytes_to_pil(image_bytes):
     from models.dicom_utils import is_dicom, dicom_to_pil
     from PIL import Image as PILImage
     import io
-
     if is_dicom(image_bytes):
         return dicom_to_pil(image_bytes)
     return PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+
+
+def _run_safety(interpretation: str) -> dict:
+    """Run safety assessment and return dict. Always works even without engine."""
+    if app_state.safety_engine:
+        return app_state.safety_engine.assess(interpretation).to_dict()
+    return {
+        "triage_level": "ROUTINE",
+        "confidence_score": 0.5,
+        "confidence_label": "MODERATE",
+        "requires_human_review": True,
+        "is_blocked": False,
+        "block_reason": "",
+        "referral_triggered": False,
+        "referral_type": "",
+        "referral_reason": "",
+        "critical_findings": [],
+        "urgent_findings": [],
+        "hedging_indicators": [],
+        "warnings": ["Safety engine not loaded. Treat all output with caution."],
+    }
 
 
 # -- Routes -------------------------------------------------
 
 @app.get("/")
 async def root():
-    return {
-        "name": "VoiceRad API",
-        "version": "1.2.0",
-        "docs": "/docs",
-        "health": "/api/health",
-    }
+    return {"name": "VoiceRad API", "version": "1.3.0", "docs": "/docs"}
 
 
 @app.get("/api/health")
 async def health():
     return {
         "status": "healthy",
+        "version": "1.3.0",
         "device": app_state.device,
         "demo_mode": DEMO_MODE or app_state.medgemma_model is None,
         "models": {
             "medgemma": app_state.medgemma_model is not None,
             "medasr": app_state.medasr_model is not None,
+            "safety_engine": app_state.safety_engine is not None,
         },
         "active_sessions": len(app_state.sessions),
     }
@@ -229,7 +227,6 @@ async def transcribe(request: Request, audio: UploadFile = File(...)):
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(422, "Empty audio file")
-
     if app_state.medasr_model:
         transcript = app_state.medasr_model.transcribe(audio_bytes)
     else:
@@ -249,25 +246,24 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
     if not image_bytes:
         raise HTTPException(422, "Empty image file")
     if len(image_bytes) > MAX_IMAGE_SIZE:
-        raise HTTPException(413, f"Image exceeds {MAX_IMAGE_SIZE // 1_000_000} MB limit")
-
+        raise HTTPException(413, "Image too large")
     from models.dicom_utils import is_dicom, extract_dicom_metadata
-
     metadata = {}
     if is_dicom(image_bytes):
         try:
             metadata = extract_dicom_metadata(image_bytes)
-        except Exception as exc:
-            logger.warning("DICOM metadata extraction failed: %s", exc)
-
+        except Exception:
+            pass
     return {
         "image_id": "img_" + hashlib.sha256(image_bytes).hexdigest()[:12],
         "filename": image.filename,
         "size_bytes": len(image_bytes),
         "is_dicom": is_dicom(image_bytes),
-        "dicom_metadata": metadata if metadata else None,
+        "dicom_metadata": metadata or None,
     }
 
+
+# -- Interpretation with Safety Rails -----------------------
 
 @app.post("/api/interpret/start-session")
 async def start_session(
@@ -280,7 +276,6 @@ async def start_session(
     if not image_bytes:
         raise HTTPException(422, "Empty image file")
 
-    # Convert once, store the PIL image in session
     pil_image = _bytes_to_pil(image_bytes)
     session_id = app_state.create_session(pil_image, image_bytes, question)
 
@@ -291,15 +286,30 @@ async def start_session(
     else:
         interpretation = _demo_interpretation(question)
 
+    # Run safety assessment on interpretation
+    safety = _run_safety(interpretation)
+
+    # Store safety in session history
+    session = app_state.get_session(session_id)
+    session["safety_history"].append(safety)
+
+    # If safety blocks the interpretation, replace with referral message
+    display_interpretation = interpretation
+    if safety.get("is_blocked"):
+        display_interpretation = (
+            "AI INTERPRETATION WITHHELD\n"
+            f"Reason: {safety.get('block_reason', 'Low confidence')}\n\n"
+            "This image requires human radiologist review.\n"
+            "The AI system's confidence is below the safety threshold."
+        )
+
     return {
         "session_id": session_id,
         "status": "session_started",
-        "interpretation": interpretation,
-        "clarifying_questions": [
-            "Any specific symptoms?",
-            "Previous imaging available?",
-            "Suspected diagnosis?",
-        ],
+        "interpretation": display_interpretation,
+        "raw_interpretation": interpretation if not safety.get("is_blocked") else None,
+        "safety": safety,
+        "clarifying_questions": _get_contextual_questions(safety),
         "requires_review": True,
     }
 
@@ -320,21 +330,32 @@ async def continue_session(
             else "(voice input -- demo mode)"
         )
     if not answer:
-        raise HTTPException(422, "Provide either text answer or audio")
+        raise HTTPException(422, "Provide text or audio")
 
     session["turns"].append({"input": answer, "ts": time.time()})
 
     if app_state.medgemma_model:
-        # FIXED: Pass PIL image from session, not raw bytes
         refined = app_state.medgemma_model.refine(
             session["pil_image"], answer, session["turns"]
         )
     else:
         refined = _demo_refine(answer, len(session["turns"]))
 
+    safety = _run_safety(refined)
+    session["safety_history"].append(safety)
+
+    display = refined
+    if safety.get("is_blocked"):
+        display = (
+            "REFINED INTERPRETATION WITHHELD\n"
+            f"Reason: {safety.get('block_reason')}\n"
+            "Refer to radiologist."
+        )
+
     return {
         "session_id": session_id,
-        "refined_interpretation": refined,
+        "refined_interpretation": display,
+        "safety": safety,
         "turn": len(session["turns"]),
     }
 
@@ -342,103 +363,123 @@ async def continue_session(
 @app.post("/api/interpret/finalize/{session_id}")
 async def finalize(session_id: str):
     session = app_state.pop_session(session_id)
+    report = _build_final_report(session_id, session)
+    safety = _run_safety(report)
+
     return {
         "session_id": session_id,
         "status": "completed",
-        "final_report": _build_final_report(session_id, session),
+        "final_report": report,
+        "safety": safety,
+        "safety_history": session.get("safety_history", []),
         "total_turns": len(session["turns"]),
         "requires_clinician_review": True,
     }
 
 
-# -- TTS endpoint -------------------------------------------
-@app.post("/api/tts/speak")
-async def tts_speak(text: str = Form(...)):
-    """Server-side text-to-speech using edge-tts."""
+# -- Safety endpoint ----------------------------------------
+
+@app.post("/api/safety/assess")
+async def safety_assess(text: str = Form(...)):
+    """Standalone safety assessment for any clinical text."""
     if not text or not text.strip():
         raise HTTPException(422, "Empty text")
+    safety = _run_safety(text.strip())
+    return {"text_length": len(text.strip()), "safety": safety}
 
+
+# -- Benchmark endpoint -------------------------------------
+
+@app.post("/api/benchmarks/run")
+async def run_benchmarks():
+    """Run clinical benchmarks against loaded model."""
+    from benchmarks import BenchmarkRunner, BenchmarkCase
+
+    runner = BenchmarkRunner(
+        model=app_state.medgemma_model,
+        safety_engine=app_state.safety_engine,
+    )
+
+    # Built-in test cases (no images needed for safety/NLP testing)
+    test_cases = [
+        BenchmarkCase(
+            case_id="DEMO-001",
+            question="Describe this chest X-ray",
+            ground_truth_labels=["No Finding"],
+            expected_triage="NORMAL",
+            description="Normal CXR baseline",
+        ),
+        BenchmarkCase(
+            case_id="DEMO-002",
+            question="Check for pneumonia",
+            ground_truth_labels=["Consolidation", "Pneumonia"],
+            expected_triage="URGENT",
+            description="Lobar pneumonia case",
+        ),
+        BenchmarkCase(
+            case_id="DEMO-003",
+            question="Evaluate cardiac silhouette",
+            ground_truth_labels=["Cardiomegaly", "Pleural Effusion"],
+            expected_triage="ROUTINE",
+            description="CHF case",
+        ),
+    ]
+
+    summary = runner.run_suite(test_cases)
+    return {"benchmark_results": summary.to_dict()}
+
+
+# -- TTS endpoint -------------------------------------------
+
+@app.post("/api/tts/speak")
+async def tts_speak(text: str = Form(...)):
+    if not text or not text.strip():
+        raise HTTPException(422, "Empty text")
     try:
         import edge_tts
-        import asyncio
-        import io
-
         communicate = edge_tts.Communicate(text.strip(), "en-US-AriaNeural")
         audio_bytes = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio_bytes += chunk["data"]
-
         if audio_bytes:
-            return Response(
-                content=audio_bytes,
-                media_type="audio/mpeg",
-                headers={"Content-Disposition": "inline"},
-            )
-        else:
-            return {
-                "status": "use_client_tts",
-                "text": text.strip(),
-                "message": "TTS generation returned empty audio.",
-            }
-    except ImportError:
-        logger.warning("edge-tts not installed, falling back to client TTS")
-        return {
-            "status": "use_client_tts",
-            "text": text.strip(),
-            "message": "Server TTS unavailable. Using Web Speech API.",
-        }
+            return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as exc:
-        logger.error("TTS failed: %s", exc)
-        return {
-            "status": "use_client_tts",
-            "text": text.strip(),
-            "message": f"TTS error: {exc}",
-        }
+        logger.warning("TTS failed: %s", exc)
+    return {"status": "use_client_tts", "text": text.strip()}
 
 
-# -- DICOM conversion endpoint ------------------------------
+# -- DICOM conversion ----------------------------------------
+
 @app.post("/api/images/convert-dicom")
 async def convert_dicom(image: UploadFile = File(...)):
-    """Convert a DICOM file to PNG and return metadata."""
     image_bytes = await image.read()
     if not image_bytes:
         raise HTTPException(422, "Empty file")
-
     from models.dicom_utils import is_dicom, dicom_to_pil, extract_dicom_metadata
-    import io
-    import base64
-
+    import io, base64
     if not is_dicom(image_bytes):
-        raise HTTPException(
-            400, "File is not a valid DICOM image. Upload a .dcm file."
-        )
-    try:
-        pil_image = dicom_to_pil(image_bytes)
-        metadata = extract_dicom_metadata(image_bytes)
-    except Exception as exc:
-        raise HTTPException(500, f"DICOM processing failed: {exc}")
-
+        raise HTTPException(400, "Not a DICOM file")
+    pil_image = dicom_to_pil(image_bytes)
+    metadata = extract_dicom_metadata(image_bytes)
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG")
-    png_b64 = base64.b64encode(buf.getvalue()).decode()
-
     return {
-        "png_base64": png_b64,
+        "png_base64": base64.b64encode(buf.getvalue()).decode(),
         "metadata": metadata,
         "width": pil_image.width,
         "height": pil_image.height,
     }
 
 
-# -- Offline sync endpoints ---------------------------------
+# -- Sync endpoints -----------------------------------------
+
 @app.post("/api/sync/queue")
 async def sync_queue(
     request: Request,
     image: Optional[UploadFile] = File(None),
     question: Optional[str] = Form(None),
 ):
-    """Queue an interpretation request for when models become available."""
     entry = {
         "id": str(uuid.uuid4())[:8],
         "question": question,
@@ -453,13 +494,43 @@ async def sync_queue(
 @app.get("/api/sync/status")
 async def sync_status():
     pending = sum(1 for e in app_state._sync_queue if e["status"] == "pending")
-    return {
-        "pending": pending,
-        "total": len(app_state._sync_queue),
-    }
+    return {"pending": pending, "total": len(app_state._sync_queue)}
+
+
+# -- Contextual question generation --------------------------
+
+def _get_contextual_questions(safety: dict) -> list:
+    """Generate clinically relevant follow-up questions based on safety assessment."""
+    questions = []
+
+    triage = safety.get("triage_level", "ROUTINE")
+    if triage == "CRITICAL":
+        questions = [
+            "Is the patient hemodynamically stable?",
+            "Is this a new finding or known condition?",
+            "What are the current vital signs?",
+        ]
+    elif triage == "URGENT":
+        questions = [
+            "What are the patient's symptoms and duration?",
+            "Any relevant surgical or medical history?",
+            "Is there comparison imaging available?",
+        ]
+    else:
+        questions = [
+            "Any specific symptoms prompting this study?",
+            "Previous imaging available for comparison?",
+            "Suspected diagnosis or clinical concern?",
+        ]
+
+    if safety.get("confidence_label") in ("LOW", "VERY_LOW"):
+        questions.insert(0, "Image quality concern detected. Can you provide a clearer image?")
+
+    return questions
 
 
 # -- Demo helpers -------------------------------------------
+
 _DEMO_FINDINGS = [
     {
         "finding": "Bilateral patchy opacities in lower lobes",
@@ -483,39 +554,41 @@ _DEMO_FINDINGS = [
         "impression": "Right upper lobe consolidation likely infectious. "
         "Recommend sputum culture and follow-up imaging in 4-6 weeks.",
     },
+    {
+        "finding": "Large left-sided tension pneumothorax with mediastinal shift "
+        "to the right. Complete collapse of the left lung",
+        "impression": "CRITICAL: Tension pneumothorax requiring immediate "
+        "needle decompression and chest tube placement.",
+    },
 ]
 
 
-def _demo_interpretation(question: Optional[str]) -> str:
+def _demo_interpretation(question):
     q = question or "General evaluation"
     demo = random.choice(_DEMO_FINDINGS)
     return (
         f"RADIOLOGY INTERPRETATION (Demo)\n"
         f"{'=' * 50}\n"
         f"Question: {q}\n\n"
-        f"FINDINGS:\n"
-        f"- {demo['finding']}\n\n"
-        f"IMPRESSION:\n"
-        f"{demo['impression']}\n\n"
-        f"NOTE: This is a demo response. Real MedGemma model not loaded."
+        f"FINDINGS:\n- {demo['finding']}\n\n"
+        f"IMPRESSION:\n{demo['impression']}\n\n"
+        f"NOTE: Demo response. Real MedGemma model not loaded."
     )
 
 
-def _demo_refine(answer: str, turn_number: int) -> str:
+def _demo_refine(answer, turn_number):
     return (
         f"REFINED INTERPRETATION (Turn {turn_number})\n"
         f"{'=' * 50}\n"
-        f"Additional context incorporated: {answer}\n\n"
-        f"Assessment has been updated considering the new clinical "
-        f"information. Key differential diagnoses have been re-evaluated.\n\n"
-        f"NOTE: This is a demo response. Real MedGemma model not loaded."
+        f"Additional context: {answer}\n\n"
+        f"Assessment updated with clinical context.\n"
+        f"NOTE: Demo response."
     )
 
 
-def _build_final_report(session_id: str, session: dict) -> str:
+def _build_final_report(session_id, session):
     turn_lines = "\n".join(
-        f"  Turn {i + 1}: {turn['input']}"
-        for i, turn in enumerate(session["turns"])
+        f"  Turn {i+1}: {t['input']}" for i, t in enumerate(session["turns"])
     )
     return (
         f"FINAL RADIOLOGY REPORT\n"
@@ -525,36 +598,27 @@ def _build_final_report(session_id: str, session: dict) -> str:
         f"RECOMMENDATIONS:\n"
         f"1. Clinical correlation essential\n"
         f"2. Radiologist review required\n\n"
-        f"DISCLAIMER: AI-assisted interpretation. "
-        f"Clinician review mandatory."
+        f"DISCLAIMER: AI-assisted. Clinician review mandatory."
     )
 
 
 # -- Error handlers -----------------------------------------
+
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request, exc):
-    return JSONResponse(
-        status_code=422,
-        content={"error": "Validation error", "detail": str(exc)},
-    )
+    return JSONResponse(status_code=422, content={"error": str(exc)})
 
 
 @app.exception_handler(Exception)
 async def general_error_handler(request, exc):
-    logger.error("Unhandled error: %s", exc, exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"error": "Internal server error"},
-    )
+    logger.error("Unhandled: %s", exc, exc_info=True)
+    return JSONResponse(status_code=500, content={"error": "Internal error"})
 
 
-# -- Entrypoint ---------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(
-        app,
-        host="0.0.0.0",
+        app, host="0.0.0.0",
         port=int(os.getenv("PORT", 8000)),
         reload=os.getenv("ENV", "development") == "development",
     )
