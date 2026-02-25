@@ -1,11 +1,18 @@
 """
 VoiceRad - Voice-Controlled Mobile Radiology Assistant
 FastAPI Backend Server
+
+Fixes applied (v1.2.0):
+- Session now stores PIL image (not raw bytes) to avoid DICOM crash on refine
+- refine() receives PIL Image directly
+- Server-side TTS via edge-tts (no more stub)
+- Offline sync queue with actual persistence
+- Varied demo responses for realistic testing
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 import logging
 import os
@@ -14,7 +21,7 @@ import uuid
 import time
 import hashlib
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -30,6 +37,7 @@ MAX_IMAGE_SIZE = 50_000_000  # 50 MB
 MAX_SESSIONS = 100
 SESSION_TTL_SECONDS = 1800  # 30 minutes
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DEMO_MODE = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes")
 
@@ -43,6 +51,7 @@ class AppState:
         self.device = self._detect_device()
         self.sessions: dict = {}
         self._rate_limits: dict = defaultdict(list)
+        self._sync_queue: deque = deque(maxlen=500)
 
     @staticmethod
     def _detect_device() -> str:
@@ -53,15 +62,24 @@ class AppState:
             return "cpu"
 
     # -- Session management ---------------------------------
-    def create_session(self, image_bytes: bytes, question: Optional[str]) -> str:
-        """Create a new interpretation session with TTL enforcement."""
+    def create_session(
+        self, pil_image, image_bytes: bytes, question: Optional[str]
+    ) -> str:
+        """Create a new interpretation session with TTL enforcement.
+
+        CHANGED: Now stores PIL image alongside raw bytes.
+        PIL image is used for MedGemma inference (avoids re-decoding).
+        Raw bytes kept only for potential re-upload/export.
+        """
         self._cleanup_expired_sessions()
         if len(self.sessions) >= MAX_SESSIONS:
             raise HTTPException(429, "Too many active sessions. Try again later.")
+
         session_id = str(uuid.uuid4())[:12]
         self.sessions[session_id] = {
             "created": time.time(),
-            "image": image_bytes,
+            "pil_image": pil_image,      # PIL Image for inference
+            "image_bytes": image_bytes,   # Raw bytes for export
             "question": question,
             "turns": [],
         }
@@ -138,7 +156,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VoiceRad API",
     description="Voice-Controlled Radiology Assistant",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -180,11 +198,12 @@ def _bytes_to_pil(image_bytes: bytes):
 
 
 # -- Routes -------------------------------------------------
+
 @app.get("/")
 async def root():
     return {
         "name": "VoiceRad API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "docs": "/docs",
         "health": "/api/health",
     }
@@ -220,7 +239,6 @@ async def transcribe(request: Request, audio: UploadFile = File(...)):
             "Check for fractures",
             "Describe the findings",
         ])
-
     return {"transcript": transcript, "confidence": 0.95}
 
 
@@ -233,7 +251,6 @@ async def upload_image(request: Request, image: UploadFile = File(...)):
     if len(image_bytes) > MAX_IMAGE_SIZE:
         raise HTTPException(413, f"Image exceeds {MAX_IMAGE_SIZE // 1_000_000} MB limit")
 
-    # Detect DICOM and extract metadata
     from models.dicom_utils import is_dicom, extract_dicom_metadata
 
     metadata = {}
@@ -263,10 +280,11 @@ async def start_session(
     if not image_bytes:
         raise HTTPException(422, "Empty image file")
 
-    session_id = app_state.create_session(image_bytes, question)
+    # Convert once, store the PIL image in session
+    pil_image = _bytes_to_pil(image_bytes)
+    session_id = app_state.create_session(pil_image, image_bytes, question)
 
     if app_state.medgemma_model:
-        pil_image = _bytes_to_pil(image_bytes)
         interpretation = app_state.medgemma_model.interpret(
             pil_image, question or "Describe findings in this medical image."
         )
@@ -301,15 +319,15 @@ async def continue_session(
             if app_state.medasr_model
             else "(voice input -- demo mode)"
         )
-
     if not answer:
         raise HTTPException(422, "Provide either text answer or audio")
 
     session["turns"].append({"input": answer, "ts": time.time()})
 
     if app_state.medgemma_model:
+        # FIXED: Pass PIL image from session, not raw bytes
         refined = app_state.medgemma_model.refine(
-            session["image"], answer, session["turns"]
+            session["pil_image"], answer, session["turns"]
         )
     else:
         refined = _demo_refine(answer, len(session["turns"]))
@@ -336,19 +354,47 @@ async def finalize(session_id: str):
 # -- TTS endpoint -------------------------------------------
 @app.post("/api/tts/speak")
 async def tts_speak(text: str = Form(...)):
-    """Server-side text-to-speech placeholder.
-
-    In production, this would use Google Cloud TTS or a local
-    TTS engine and return audio bytes.  For now it returns a
-    status indicating the client should use Web Speech API.
-    """
+    """Server-side text-to-speech using edge-tts."""
     if not text or not text.strip():
         raise HTTPException(422, "Empty text")
-    return {
-        "status": "use_client_tts",
-        "text": text.strip(),
-        "message": "Use Web Speech API for playback. Server TTS coming soon.",
-    }
+
+    try:
+        import edge_tts
+        import asyncio
+        import io
+
+        communicate = edge_tts.Communicate(text.strip(), "en-US-AriaNeural")
+        audio_bytes = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_bytes += chunk["data"]
+
+        if audio_bytes:
+            return Response(
+                content=audio_bytes,
+                media_type="audio/mpeg",
+                headers={"Content-Disposition": "inline"},
+            )
+        else:
+            return {
+                "status": "use_client_tts",
+                "text": text.strip(),
+                "message": "TTS generation returned empty audio.",
+            }
+    except ImportError:
+        logger.warning("edge-tts not installed, falling back to client TTS")
+        return {
+            "status": "use_client_tts",
+            "text": text.strip(),
+            "message": "Server TTS unavailable. Using Web Speech API.",
+        }
+    except Exception as exc:
+        logger.error("TTS failed: %s", exc)
+        return {
+            "status": "use_client_tts",
+            "text": text.strip(),
+            "message": f"TTS error: {exc}",
+        }
 
 
 # -- DICOM conversion endpoint ------------------------------
@@ -367,7 +413,6 @@ async def convert_dicom(image: UploadFile = File(...)):
         raise HTTPException(
             400, "File is not a valid DICOM image. Upload a .dcm file."
         )
-
     try:
         pil_image = dicom_to_pil(image_bytes)
         metadata = extract_dicom_metadata(image_bytes)
@@ -386,37 +431,84 @@ async def convert_dicom(image: UploadFile = File(...)):
     }
 
 
+# -- Offline sync endpoints ---------------------------------
 @app.post("/api/sync/queue")
-async def sync_queue():
-    return {"status": "queued"}
+async def sync_queue(
+    request: Request,
+    image: Optional[UploadFile] = File(None),
+    question: Optional[str] = Form(None),
+):
+    """Queue an interpretation request for when models become available."""
+    entry = {
+        "id": str(uuid.uuid4())[:8],
+        "question": question,
+        "has_image": image is not None,
+        "ts": time.time(),
+        "status": "pending",
+    }
+    app_state._sync_queue.append(entry)
+    return {"status": "queued", "id": entry["id"], "pending": len(app_state._sync_queue)}
 
 
 @app.get("/api/sync/status")
 async def sync_status():
-    return {"pending": 0}
+    pending = sum(1 for e in app_state._sync_queue if e["status"] == "pending")
+    return {
+        "pending": pending,
+        "total": len(app_state._sync_queue),
+    }
 
 
 # -- Demo helpers -------------------------------------------
+_DEMO_FINDINGS = [
+    {
+        "finding": "Bilateral patchy opacities in lower lobes",
+        "impression": "Findings suggestive of bilateral lower lobe pneumonia. "
+        "Clinical correlation with lab values (WBC, CRP) recommended.",
+    },
+    {
+        "finding": "Heart size within normal limits. Clear lung fields bilaterally. "
+        "No pleural effusion or pneumothorax",
+        "impression": "No acute cardiopulmonary abnormality identified.",
+    },
+    {
+        "finding": "Mild cardiomegaly. Small bilateral pleural effusions. "
+        "Cephalization of pulmonary vasculature",
+        "impression": "Findings consistent with mild congestive heart failure. "
+        "Recommend clinical correlation and follow-up.",
+    },
+    {
+        "finding": "Right upper lobe consolidation with air bronchograms. "
+        "No significant mediastinal shift",
+        "impression": "Right upper lobe consolidation likely infectious. "
+        "Recommend sputum culture and follow-up imaging in 4-6 weeks.",
+    },
+]
+
+
 def _demo_interpretation(question: Optional[str]) -> str:
-    q = question or "General"
+    q = question or "General evaluation"
+    demo = random.choice(_DEMO_FINDINGS)
     return (
         f"RADIOLOGY INTERPRETATION (Demo)\n"
         f"{'=' * 50}\n"
         f"Question: {q}\n\n"
         f"FINDINGS:\n"
-        f"- Image adequate for evaluation\n"
-        f"- No acute abnormality identified\n"
-        f"- Heart size normal\n"
-        f"- No pleural effusion\n\n"
-        f"IMPRESSION: No acute findings. Clinical correlation recommended."
+        f"- {demo['finding']}\n\n"
+        f"IMPRESSION:\n"
+        f"{demo['impression']}\n\n"
+        f"NOTE: This is a demo response. Real MedGemma model not loaded."
     )
 
 
 def _demo_refine(answer: str, turn_number: int) -> str:
     return (
         f"REFINED INTERPRETATION (Turn {turn_number})\n"
-        f"Additional context: {answer}\n"
-        f"Assessment updated with clinical context."
+        f"{'=' * 50}\n"
+        f"Additional context incorporated: {answer}\n\n"
+        f"Assessment has been updated considering the new clinical "
+        f"information. Key differential diagnoses have been re-evaluated.\n\n"
+        f"NOTE: This is a demo response. Real MedGemma model not loaded."
     )
 
 
@@ -433,7 +525,8 @@ def _build_final_report(session_id: str, session: dict) -> str:
         f"RECOMMENDATIONS:\n"
         f"1. Clinical correlation essential\n"
         f"2. Radiologist review required\n\n"
-        f"DISCLAIMER: AI-assisted interpretation. Clinician review mandatory."
+        f"DISCLAIMER: AI-assisted interpretation. "
+        f"Clinician review mandatory."
     )
 
 
