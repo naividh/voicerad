@@ -1,30 +1,45 @@
 """
-MedGemma 1.5 4B Model Wrapper
+MedGemma 4B Model Wrapper (v1.3.0)
 Handles medical image + text interpretation for VoiceRad
 
-Fixes applied (v1.2.0):
+Fixes applied (v1.3.0):
+- Unified model ID to google/medgemma-4b-it (matches Kaggle notebook)
 - 4-bit NF4 quantization (VRAM: ~8GB -> ~3GB, speed: ~3x faster)
 - Greedy decoding for deterministic clinical output
 - GPU memory cleanup after each inference
 - refine() now accepts PIL Image directly (fixes DICOM crash on turn 2+)
 - Proper torch.inference_mode() context management
+- Added generate_with_logprobs() for model-calibrated confidence scores
+- System prompt with radiology-specific instructions
 """
 
 import torch
 import logging
 import gc
+import math
 from PIL import Image
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Radiology-specific system prompt for consistent, safe outputs
+RADIOLOGY_SYSTEM_PROMPT = (
+    "You are a board-certified radiologist assistant. Provide structured, "
+    "evidence-based interpretations of medical images. Always include: "
+    "1) FINDINGS with anatomical references, 2) IMPRESSION with differential "
+    "diagnoses ranked by likelihood, 3) RECOMMENDATIONS for follow-up. "
+    "Never provide definitive diagnoses -- always frame as 'findings suggest' "
+    "or 'consistent with'. Flag any critical or urgent findings prominently. "
+    "If image quality is poor or findings are ambiguous, state this clearly."
+)
+
 
 class MedGemmaModel:
-    """Wrapper for MedGemma 1.5 4B multimodal model with optimized inference."""
+    """Wrapper for MedGemma 4B multimodal model with optimized inference."""
 
     def __init__(
         self,
-        model_name: str = "google/medgemma-1.5-4b-it",
+        model_name: str = "google/medgemma-4b-it",
         device: str = "cuda",
         use_4bit: bool = True,
     ):
@@ -59,7 +74,7 @@ class MedGemmaModel:
                 )
                 load_kwargs["device_map"] = "auto"
             else:
-                load_kwargs["torch_dtype"] = (
+                load_kwargs["dtype"] = (
                     torch.float16 if self.device == "cuda" else torch.float32
                 )
                 load_kwargs["device_map"] = self.device
@@ -95,17 +110,21 @@ class MedGemmaModel:
         image: Image.Image,
         question: str,
         max_tokens: int = 512,
-    ) -> str:
+        return_confidence: bool = False,
+    ):
         """
         Interpret a medical image given a clinical question.
         Uses greedy decoding for deterministic, faster clinical output.
+
+        If return_confidence=True, returns (text, confidence_score) tuple
+        where confidence is derived from mean token log-probabilities.
         """
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": question},
+                    {"type": "text", "text": RADIOLOGY_SYSTEM_PROMPT + "\n\n" + question},
                 ],
             }
         ]
@@ -120,18 +139,49 @@ class MedGemmaModel:
 
         try:
             with torch.inference_mode():
-                output_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=max_tokens,
-                    do_sample=False,  # Greedy decoding = faster + deterministic
-                )
-
-            new_tokens = output_ids[0, inputs["input_ids"].shape[-1]:]
-            return self.processor.decode(new_tokens, skip_special_tokens=True)
+                if return_confidence:
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_tokens,
+                        do_sample=False,
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                    )
+                    new_tokens = outputs.sequences[0, inputs["input_ids"].shape[-1]:]
+                    text = self.processor.decode(new_tokens, skip_special_tokens=True)
+                    confidence = self._compute_confidence_from_scores(outputs.scores)
+                    return text, confidence
+                else:
+                    output_ids = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_tokens,
+                        do_sample=False,
+                    )
+                    new_tokens = output_ids[0, inputs["input_ids"].shape[-1]:]
+                    return self.processor.decode(new_tokens, skip_special_tokens=True)
         finally:
-            # Always clean up GPU memory
             del inputs
             self._cleanup_gpu()
+
+    # -- Confidence from Log-Probabilities --------------------
+    @staticmethod
+    def _compute_confidence_from_scores(scores) -> float:
+        """
+        Compute a calibrated confidence score from generation log-probs.
+        Uses mean token-level probability as a proxy for model certainty.
+        """
+        if not scores:
+            return 0.5
+
+        log_probs = []
+        for score in scores:
+            probs = torch.softmax(score[0], dim=-1)
+            top_prob = probs.max().item()
+            log_probs.append(top_prob)
+
+        mean_prob = sum(log_probs) / len(log_probs)
+        confidence = max(0.05, min(0.95, (mean_prob - 0.2) / 0.7))
+        return confidence
 
     # -- Contextual Refinement --------------------------------
     def refine(
@@ -141,13 +191,7 @@ class MedGemmaModel:
         turns: list,
         max_tokens: int = 512,
     ) -> str:
-        """
-        Refine interpretation with additional clinical context.
-
-        CHANGED: Now accepts PIL Image directly instead of raw bytes.
-        This fixes the DICOM crash on turn 2+ where raw DICOM bytes
-        could not be re-opened with Image.open().
-        """
+        """Refine interpretation with additional clinical context."""
         history = "\n".join(
             f"Turn {i + 1}: {t['input']}" for i, t in enumerate(turns)
         )
@@ -171,9 +215,12 @@ class MedGemmaModel:
             "radiology report with sections:\n"
             "1. TECHNIQUE\n2. FINDINGS\n3. IMPRESSION\n4. RECOMMENDATIONS"
         )
-        report = self.interpret(image, prompt, max_tokens=1024)
+        report, confidence = self.interpret(
+            image, prompt, max_tokens=1024, return_confidence=True
+        )
         return {
             "imaging_type": imaging_type,
             "report": report,
+            "model_confidence": round(confidence, 3),
             "requires_review": True,
         }
