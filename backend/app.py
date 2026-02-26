@@ -392,7 +392,12 @@ async def safety_assess(text: str = Form(...)):
 
 @app.post("/api/benchmarks/run")
 async def run_benchmarks():
-    """Run clinical benchmarks against loaded model."""
+    """Run clinical benchmarks against loaded model.
+
+    Loads 20 CheXpert-labeled cases from benchmarks/clinical_validation.json
+    and evaluates model performance on pathology detection, triage accuracy,
+    safety rail effectiveness, and confidence calibration.
+    """
     from benchmarks import BenchmarkRunner, BenchmarkCase
 
     runner = BenchmarkRunner(
@@ -400,34 +405,52 @@ async def run_benchmarks():
         safety_engine=app_state.safety_engine,
     )
 
-    # Built-in test cases (no images needed for safety/NLP testing)
-    test_cases = [
-        BenchmarkCase(
-            case_id="DEMO-001",
-            question="Describe this chest X-ray",
-            ground_truth_labels=["No Finding"],
-            expected_triage="NORMAL",
-            description="Normal CXR baseline",
-        ),
-        BenchmarkCase(
-            case_id="DEMO-002",
-            question="Check for pneumonia",
-            ground_truth_labels=["Consolidation", "Pneumonia"],
-            expected_triage="URGENT",
-            description="Lobar pneumonia case",
-        ),
-        BenchmarkCase(
-            case_id="DEMO-003",
-            question="Evaluate cardiac silhouette",
-            ground_truth_labels=["Cardiomegaly", "Pleural Effusion"],
-            expected_triage="ROUTINE",
-            description="CHF case",
-        ),
-    ]
+    # Try to load the full 20-case clinical validation suite
+    validation_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "benchmarks", "clinical_validation.json",
+    )
+    test_cases = []
+    if os.path.exists(validation_path):
+        try:
+            test_cases = BenchmarkRunner.load_cases_from_json(validation_path)
+            logger.info("Loaded %d benchmark cases from %s", len(test_cases), validation_path)
+        except Exception as exc:
+            logger.warning("Failed to load validation JSON: %s", exc)
+
+    # Fallback to built-in demo cases if file not found
+    if not test_cases:
+        logger.info("Using built-in demo benchmark cases")
+        test_cases = [
+            BenchmarkCase(
+                case_id="DEMO-001",
+                question="Describe this chest X-ray",
+                ground_truth_labels=["No Finding"],
+                expected_triage="NORMAL",
+                description="Normal CXR baseline",
+            ),
+            BenchmarkCase(
+                case_id="DEMO-002",
+                question="Check for pneumonia",
+                ground_truth_labels=["Consolidation", "Pneumonia"],
+                expected_triage="URGENT",
+                description="Lobar pneumonia case",
+            ),
+            BenchmarkCase(
+                case_id="DEMO-003",
+                question="Evaluate cardiac silhouette",
+                ground_truth_labels=["Cardiomegaly", "Pleural Effusion"],
+                expected_triage="ROUTINE",
+                description="CHF case",
+            ),
+        ]
 
     summary = runner.run_suite(test_cases)
-    return {"benchmark_results": summary.to_dict()}
-
+    return {
+        "benchmark_results": summary.to_dict(),
+        "cases_loaded": len(test_cases),
+        "source": "clinical_validation.json" if os.path.exists(validation_path) else "built-in demo",
+    }
 
 # -- TTS endpoint -------------------------------------------
 
