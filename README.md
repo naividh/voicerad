@@ -2,6 +2,186 @@
 
 **Voice-Controlled Mobile Radiology Assistant with Clinical Safety Rails**
 
+Built for the [Kaggle MedGemma Impact Challenge](https://www.kaggle.com/competitions/med-gemma-impact-challenge) using Google's [MedGemma](https://ai.google.dev/gemma/docs/medgemma) and [Health AI Developer Foundations (HAI-DEF)](https://developers.google.com/health-ai-developer-foundations).
+
+> **Kaggle Resources:** [Competition Writeup](https://www.kaggle.com/competitions/med-gemma-impact-challenge/writeups/voicerad-voice-controlled-mobile-radiology-assist) | [Kaggle Notebook](https://www.kaggle.com/code/naivedhyaagrawal/notebookd31da50165)
+
+---
+
+## The Problem
+
+Over **42,000 radiologist positions** will be unfilled globally by 2033, and **4.5 billion people** lack access to basic medical imaging services (WHO). Rural clinicians often have no radiologist within hours of travel, leading to **up to 30% error rates** in chest X-ray interpretation.
+
+## The Solution
+
+VoiceRad is a **voice-first, offline-capable PWA** that lets rural clinicians upload a chest X-ray, ask questions by voice, and receive AI-assisted interpretations powered by **MedGemma 4B** with built-in clinical safety rails.
+
+## Key Differentiators
+
+- **Voice-first design** for hands-free clinical use (Whisper STT + edge-tts audio output)
+- **Clinical safety rails** with deterministic triage (CRITICAL/URGENT/ROUTINE/NORMAL), model-calibrated confidence scoring, and referral triggers
+- **Multi-turn agentic conversation** where clinicians refine interpretations with additional clinical context
+- **Offline-first architecture** with IndexedDB queueing and background sync
+- **DICOM native** support with metadata extraction and conversion
+
+## Architecture
+
+```
+[Voice Input] --> [Whisper STT] --> [FastAPI Backend]
+[Image Upload] --> [DICOM/PNG/JPG] ---|
+                                       v
+                              [MedGemma 4B] (4-bit NF4 quantized)
+                                       |
+                                       v
+                              [Clinical Safety Engine]
+                              (triage + confidence + referral)
+                                       |
+                                       v
+                              [React PWA Frontend]
+                              (SafetyBanner + TTS playback)
+```
+
+## Performance
+
+| Metric | Value |
+|--------|-------|
+| Model | MedGemma 4B (google/medgemma-4b-it) |
+| Quantization | 4-bit NF4 via BitsAndBytes |
+| VRAM usage | ~3 GB (down from ~8 GB float16) |
+| Inference (T4 GPU) | 7-10s per interpretation |
+| Confidence scoring | Model log-probability based |
+| Safety engine | Deterministic, regex + threshold based |
+| Critical finding detection | ACR-aligned pattern matching |
+| Triage levels | CRITICAL / URGENT / ROUTINE / NORMAL |
+
+## Clinical Safety Rails
+
+Every AI interpretation passes through a **deterministic safety engine** that cannot be bypassed by the model. Safety is monotonically increasing -- more information can only make the system MORE cautious, never less.
+
+### Confidence Scoring (v1.3.0)
+
+VoiceRad uses **model log-probability based confidence** when available, falling back to text heuristics. The `confidence_source` field tracks which method was used:
+
+- **model_logprob**: Derived from mean token-level probability during generation. More reliable.
+- **text_heuristic**: Estimated from response structure, length, and anatomical specificity. Used when log-probs unavailable.
+
+### Triage Classification
+
+| Level | Color | Action Required |
+|-------|-------|-----------------|
+| CRITICAL | Red (pulsing) | Immediate radiologist review |
+| URGENT | Orange | Review within 1 hour |
+| ROUTINE | Yellow | Standard review queue |
+| NORMAL | Green | No acute findings |
+
+### Hedging Language Policy (v1.3.0)
+
+Appropriately cautious language ("cannot exclude", "clinical correlation recommended") is treated as a sign of **good model calibration**, not penalized. Only excessive hedging (>4 indicators) with text-heuristic confidence triggers a minor adjustment. This reflects clinical best practice where appropriate uncertainty expression is desirable.
+
+### Critical Finding Detection
+
+Based on ACR Critical Results guidelines: pneumothorax, aortic dissection, pulmonary embolism, acute stroke, active hemorrhage, cardiac tamponade, spinal cord compression, and more. Any critical pattern triggers **IMMEDIATE referral** regardless of confidence score.
+
+## Project Structure
+
+```
+voicerad/
+  backend/
+    app.py              # FastAPI server v1.3.0
+    safety.py           # Clinical safety engine v1.3.0
+    benchmarks.py       # CheXpert benchmark runner
+    requirements.txt
+    Dockerfile
+    models/
+      medgemma_wrapper.py  # MedGemma 4B with log-prob confidence
+      medasr_wrapper.py    # Whisper STT
+      dicom_utils.py       # DICOM handling
+  frontend/
+    src/
+      App.jsx           # Main app with safety integration
+      components/
+        SafetyBanner.jsx  # Safety rail visual component
+  benchmarks/
+    clinical_validation.json  # 20 CheXpert-labeled test cases
+  tests/
+    test_safety.py      # 25 safety rail unit tests
+    test_app.py         # API endpoint tests
+  docker-compose.yml    # CPU + GPU profiles
+  .github/workflows/    # CI/CD
+```
+
+## Quick Start
+
+### Prerequisites
+- Python 3.10+
+- Node.js 18+ (for frontend)
+- (Optional) NVIDIA GPU with CUDA 12.1 for real model inference
+
+### Backend
+```bash
+cd backend
+pip install -r requirements.txt
+
+# Demo mode (no GPU needed)
+DEMO_MODE=true python app.py
+
+# Real mode (requires HuggingFace token with MedGemma access)
+HF_TOKEN=your_token python app.py
+```
+
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### Docker
+```bash
+# CPU demo mode
+docker compose up
+
+# GPU mode with real models
+docker compose --profile gpu up
+```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /api/health | System status, model availability |
+| POST | /api/voice/transcribe | Speech-to-text (Whisper) |
+| POST | /api/images/upload | Image upload with DICOM detection |
+| POST | /api/interpret/start-session | Start interpretation with safety |
+| POST | /api/interpret/continue/{id} | Refine with additional context |
+| POST | /api/interpret/finalize/{id} | Generate final report |
+| POST | /api/safety/assess | Standalone safety assessment |
+| POST | /api/benchmarks/run | Run clinical validation |
+| POST | /api/tts/speak | Text-to-speech via edge-tts |
+
+## Safety Philosophy
+
+VoiceRad follows a **fail-safe design principle**:
+
+1. The AI can never autonomously diagnose. Every output requires clinician review.
+2. Safety overrides are deterministic. No probabilistic model can override the safety engine.
+3. Confidence below 30% blocks output entirely.
+4. Critical findings trigger immediate referral.
+5. Safety is monotonically increasing. Additional information can only make the system more cautious.
+
+**This is not a replacement for radiologists.** It is a tool to help clinicians in underserved areas where no radiologist is available, with built-in guardrails that protect patients when the AI is uncertain.
+
+## License
+
+Apache 2.0
+
+## Team
+
+Built by [Naivedhya Agrawal](https://www.kaggle.com/naivedhyaagrawal) for the Kaggle MedGemma Impact Challenge 2026.
+# VoiceRad
+
+**Voice-Controlled Mobile Radiology Assistant with Clinical Safety Rails**
+
 Built for the [Kaggle MedGemma Impact Challenge](https://www.kaggle.com/competitions/med-gemma-impact-challenge) using Google's MedGemma and Health AI Developer Foundations ([HAI-DEF](https://github.com/Google-Health/hai-def)).
 
 ---
