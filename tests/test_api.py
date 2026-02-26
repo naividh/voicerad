@@ -27,13 +27,15 @@ client = TestClient(app)
 
 
 # --- Helpers ------------------------------------------------
-TINY_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
-    b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx"
-    b"\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
-    b"\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+def _create_test_png():
+    """Create a valid minimal PNG image in memory."""
+    from PIL import Image as PILImage
+    buf = io.BytesIO()
+    img = PILImage.new("RGB", (64, 64), color=(128, 128, 128))
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+TINY_PNG = _create_test_png()
 
 FAKE_AUDIO = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00" + b"\x00" * 32
 
@@ -63,7 +65,7 @@ class TestRootAndHealth:
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "VoiceRad API"
-        assert body["version"] == "1.1.0"
+        assert body["version"] == "1.3.0"
         assert "docs" in body
 
     def test_health_returns_healthy(self):
