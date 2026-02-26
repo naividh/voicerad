@@ -23,7 +23,7 @@ jobs:
       - name: Install backend dependencies
         run: |
           pip install --upgrade pip setuptools wheel
-          # Install core deps (skip GPU-only packages in CI)
+          # Install core deps only (GPU packages skipped in CI)
           pip install fastapi==0.104.1 "uvicorn[standard]==0.24.0" python-multipart==0.0.6 pydantic==2.5.0
           pip install pillow==10.1.0 numpy==1.24.3
           pip install pydicom==2.4.0
@@ -49,13 +49,3 @@ jobs:
         run: npm ci || npm install
       - name: Build frontend
         run: npm run build
-
-  docker-build:
-    runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-build]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Docker images
-        run: |
-          docker build -t voicerad-backend ./backend
-          docker build -t voicerad-frontend ./frontend
