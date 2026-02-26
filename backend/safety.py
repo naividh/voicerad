@@ -42,11 +42,11 @@ HIGH_CONFIDENCE_THRESHOLD = 0.85
 CRITICAL_PATTERNS = [
     r"\b(tension\s+)?pneumothorax\b",
     r"\b(aortic\s+dissection|aortic\s+rupture|aortic\s+aneurysm.{0,20}ruptur)\b",
-    r"\b(pulmonary\s+embol|PE\s+positive|saddle\s+embol)\b",
+    r"\b(pulmonary\s+embol\w*|PE\s+positive|saddle\s+embol\w*)\b",
     r"\b(acute\s+(stroke|infarct|ischem)|hemorrhag.{0,10}(stroke|bleed))\b",
     r"\b(active\s+(hemorrhag|bleed)|massive\s+hemoptysis)\b",
     r"\b(foreign\s+body.{0,15}airway|complete\s+airway\s+obstruct)\b",
-    r"\b(cardiac\s+tamponade|pericardial\s+effusion.{0,20}(large|massive))\b",
+    r"\b(cardiac\s+tamponade|pericardial\s+effusion.{0,30}(large|massive|tamponade))\b",
     r"\b(necrotizing\s+fasciitis|gas\s+gangrene|free\s+(air|gas).{0,15}(abdom|periton))\b",
     r"\b(spinal\s+cord\s+compress|cauda\s+equina)\b",
     r"\b(testicular\s+torsion|ovarian\s+torsion)\b",
@@ -54,8 +54,8 @@ CRITICAL_PATTERNS = [
 
 URGENT_PATTERNS = [
     r"\b(displac.{0,10}fracture|open\s+fracture|pathologic.{0,10}fracture)\b",
-    r"\b(large|massive)\s+pleural\s+effusion\b",
-    r"\b(lobar\s+consolidation|multilobar\s+pneumonia)\b",
+    r"\b(large|massive).{0,30}pleural\s+effusion\b",
+    r"\b(lobar\s+(consolidation|pneumonia)|multilobar\s+pneumonia|pneumonia)\b",
     r"\b(suspect.{0,15}(malignan|neoplas|carcinoma|metasta)|lung\s+mass)\b",
     r"\b(bowel\s+obstruct|small\s+bowel\s+obstruct|SBO)\b",
     r"\b(deep\s+vein\s+thrombos|DVT)\b",
@@ -197,14 +197,18 @@ class ClinicalSafetyEngine:
             result.referral_type = "URGENT"
             result.referral_reason = "Urgent finding requires radiologist review within 1 hour."
             result.warnings.append("URGENT finding - Radiologist review within 1 hour")
-        elif result.confidence_score < self.uncertain:
-            result.triage_level = TriageLevel.ROUTINE
-            result.triage_reason = "Low confidence interpretation"
         else:
-            neg_patterns = [r"no\s+acute", r"normal", r"unremarkable", r"no\s+(significant|abnormal)"]
+            neg_patterns = [r"no\s+acute", r"\bnormal\b", r"\bunremarkable\b", r"no\s+(significant|abnormal)", r"\bclear\b.{0,20}\bbilateral"]
             is_normal = any(re.search(p, interpretation, re.IGNORECASE) for p in neg_patterns)
-            result.triage_level = TriageLevel.NORMAL if is_normal else TriageLevel.ROUTINE
-            result.triage_reason = "No acute findings" if is_normal else "Findings require standard review"
+            if is_normal:
+                result.triage_level = TriageLevel.NORMAL
+                result.triage_reason = "No acute findings"
+            elif result.confidence_score < self.uncertain:
+                result.triage_level = TriageLevel.ROUTINE
+                result.triage_reason = "Low confidence interpretation"
+            else:
+                result.triage_level = TriageLevel.ROUTINE
+                result.triage_reason = "Findings require standard review"
 
         # Step 4: Confidence-based blocking
         if result.confidence_score < self.low_confidence:
